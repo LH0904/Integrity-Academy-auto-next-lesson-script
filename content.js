@@ -2,6 +2,8 @@
   const PANEL_ID = "cx-autonext-panel-host";
   const VIDEO_SELECTOR = "#rightBox .in-player-panel video";
   const NEXT_SELECTOR = ".progress-count .right .next";
+  const PREVIOUS_SELECTOR = ".progress-count .right .last";
+  const VERIFY_TIMEOUT_MS = 20000;
 
   let enabled = true;
   let busy = false;
@@ -21,6 +23,77 @@
 
   function currentTitle() {
     return document.querySelector("#rightBox .topBox .title_box h1")?.textContent?.trim() || "";
+  }
+
+  function normalizedTitle(title) {
+    return title.replace(/^\s*\d+(?:\.\d+)*\s*/, "").trim();
+  }
+
+  function durationInSeconds(value) {
+    if (typeof value !== "string") return 0;
+    return value.split(":").reduce((total, part) => total * 60 + Number(part), 0);
+  }
+
+  function findLesson(nodes, title) {
+    const target = normalizedTitle(title);
+    for (const node of nodes || []) {
+      if (node.contentType === "video" && node.name?.trim() === target) return node;
+      const found = findLesson(node.sub, title);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  async function readLessonCompletion(title) {
+    const courseId = new URLSearchParams(location.search).get("courseId");
+    if (!courseId) throw new Error("courseId 参数不存在");
+
+    const url = `${location.origin}/e-training/api/course/quality/${encodeURIComponent(courseId)}`;
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    if (!response.ok) throw new Error(`课程接口返回 HTTP ${response.status}`);
+
+    const course = await response.json();
+    const lesson = findLesson(course.courseTree?.sub, title);
+    if (!lesson) throw new Error("课程接口中没有找到当前讲");
+
+    const duration = durationInSeconds(lesson.duration);
+    const progress = Number(lesson.isLearned?.learnProgress) || 0;
+    const learnedDuration = Number(lesson.isLearned?.learnDuration) || 0;
+    const playPercent = duration ? Math.floor(progress / duration * 100) : 0;
+    const durationPercent = duration ? learnedDuration / duration * 100 : 0;
+
+    return {
+      completed: lesson.isLearned?.isLearned === true && playPercent > 90 && durationPercent >= 90,
+      learned: lesson.isLearned?.isLearned === true,
+      playPercent,
+      durationPercent,
+    };
+  }
+
+  async function waitForLessonCompletion(title) {
+    const deadline = Date.now() + VERIFY_TIMEOUT_MS;
+    let latest = null;
+    let latestError = null;
+
+    while (Date.now() < deadline) {
+      try {
+        latest = await readLessonCompletion(title);
+        latestError = null;
+        if (latest.completed) return { result: latest };
+      } catch (error) {
+        latestError = error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+
+    return { result: latest, error: latestError };
+  }
+
+  async function returnToLesson(title) {
+    const previousButton = document.querySelector(PREVIOUS_SELECTOR);
+    if (!previousButton) return false;
+    previousButton.click();
+    return Boolean(await waitFor(() => currentTitle() === title, 10000));
   }
 
   function setStatus(message) {
@@ -125,6 +198,28 @@
 
       if (!loadedVideo) {
         setStatus("下一讲已切换，视频仍未就绪；可手动点击播放");
+        return;
+      }
+
+      setStatus("正在核对平台保存的播放进度和累计时长…");
+      const verification = await waitForLessonCompletion(oldTitle);
+      if (!verification.result?.completed) {
+        const returned = await returnToLesson(oldTitle);
+        if (!verification.result) {
+          setStatus(returned
+            ? "暂时无法读取平台学习记录，已返回本讲并停止续播"
+            : "暂时无法读取平台学习记录，自动续播已停止");
+        } else {
+          const { learned, playPercent, durationPercent } = verification.result;
+          setStatus(returned
+            ? `平台尚未确认本讲完成（进度 ${playPercent}%，时长 ${Math.floor(durationPercent)}%）；已返回本讲并停止续播`
+            : `平台尚未确认本讲完成（进度 ${playPercent}%，时长 ${Math.floor(durationPercent)}%）；自动续播已停止`);
+          if (learned && playPercent > 90 && durationPercent >= 90) {
+            setStatus(returned
+              ? "平台仍未标记本讲完成；已返回本讲并停止续播"
+              : "平台仍未标记本讲完成；自动续播已停止");
+          }
+        }
         return;
       }
 

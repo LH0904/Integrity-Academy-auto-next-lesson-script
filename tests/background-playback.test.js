@@ -75,7 +75,7 @@
     };
   }
 
-  assert(manifest.version === "1.2.0", "Version must match the packaged release");
+  assert(manifest.version === "1.3.0", "Version must match the packaged release");
   assert(manifest.content_scripts.some((entry) =>
     entry.world === "MAIN" && entry.js.includes("background-playback.js")), "Missing MAIN-world bridge");
   assert(manifest.content_scripts.some((entry) =>

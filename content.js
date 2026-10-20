@@ -5,6 +5,7 @@
   const PREVIOUS_SELECTOR = ".progress-count .right .last";
   const VERIFY_TIMEOUT_MS = 20000;
   const BACKGROUND_TIMEOUT_MS = 120000;
+  const END_POLL_INTERVAL_MS = 1000;
   const CONTROL_EVENT = "cx-autonext-background-control-v1";
   const STATE_EVENT = "cx-autonext-background-state-v1";
 
@@ -15,6 +16,7 @@
   let busy = false;
   let runId = 0;
   let observedVideo = null;
+  let endPollTimer = null;
   const boundVideos = new WeakSet();
   let host = null;
   let statusNode = null;
@@ -78,8 +80,37 @@
   }
 
   function durationInSeconds(value) {
-    if (typeof value !== "string") return 0;
-    return value.split(":").reduce((total, part) => total * 60 + Number(part), 0);
+    return globalThis.CXAutoNextVideoUtils.durationInSeconds(value);
+  }
+
+  function findPreviousButton() {
+    const exact = document.querySelector(PREVIOUS_SELECTOR);
+    if (exact) return exact;
+
+    const containers = document.querySelectorAll(".progress-count .right");
+    for (const container of containers) {
+      const children = [...container.children];
+      const nextButton = container.querySelector(".next, .next-no-active");
+      const isDisabled = (element) => {
+        if (!element || element.disabled === true || element.getAttribute("aria-disabled") === "true") return true;
+        const classes = typeof element.className === "string" ? element.className : "";
+        return /no[-_]?active|disabled/i.test(classes);
+      };
+      const label = (element) => [element.getAttribute("aria-label"), element.getAttribute("title")]
+        .filter(Boolean).join(" ");
+      const markedPrevious = children.find((element) => {
+        if (isDisabled(element)) return false;
+        const classes = typeof element.className === "string" ? element.className : "";
+        return /(^|[\s_-])(last|prev|previous)([\s_-]|$)/i.test(classes) || /上/.test(label(element));
+      });
+      if (markedPrevious) return markedPrevious;
+
+      // The platform renders the previous and next controls as adjacent children.
+      // If its previous-control class changes, use the enabled sibling before next.
+      const nextIndex = children.indexOf(nextButton);
+      if (nextIndex > 0 && !isDisabled(children[nextIndex - 1])) return children[nextIndex - 1];
+    }
+    return null;
   }
 
   function findLesson(nodes, title) {
@@ -149,7 +180,7 @@
   }
 
   async function returnToLesson(title) {
-    const previousButton = document.querySelector(PREVIOUS_SELECTOR);
+    const previousButton = findPreviousButton();
     if (!previousButton) return false;
     previousButton.click();
     return Boolean(await waitFor(() => currentTitle() === title, 10000));
@@ -247,16 +278,13 @@
       }
     };
     const oldTitle = currentTitle();
-    const oldSource = video.currentSrc || video.src;
     const oldTime = video.currentTime;
     setStatus("正在切换到下一讲…");
 
     try {
       nextButton.click();
       const switched = await waitFor(() => {
-        const nextVideo = currentVideo();
-        const nextSource = nextVideo?.currentSrc || nextVideo?.src || "";
-        return currentTitle() !== oldTitle || Boolean(nextVideo && nextVideo !== video) || (nextSource && nextSource !== oldSource);
+        return Boolean(oldTitle && currentTitle() && currentTitle() !== oldTitle);
       }, 20000, assertActive);
       assertActive();
 
@@ -268,12 +296,10 @@
       setStatus("下一讲已切换，正在等待视频加载…");
       const loadedVideo = await waitFor(() => {
         const nextVideo = currentVideo();
-        const nextSource = nextVideo?.currentSrc || nextVideo?.src || "";
         if (!nextVideo) return null;
-        const sourceChanged = Boolean(nextSource && nextSource !== oldSource);
         const playerChanged = nextVideo !== video;
         const lessonRestarted = currentTitle() !== oldTitle && !nextVideo.ended && nextVideo.currentTime < oldTime;
-        if (!sourceChanged && !playerChanged && !lessonRestarted) return null;
+        if (!playerChanged && !lessonRestarted) return null;
         return nextVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA ? nextVideo : null;
       }, 20000, assertActive);
       assertActive();
@@ -330,6 +356,15 @@
     video.addEventListener("ended", () => handleEnded(video));
   }
 
+  function startEndPoller() {
+    if (endPollTimer) return;
+    endPollTimer = setInterval(() => {
+      if (!settingsReady || !enabled || busy) return;
+      const video = currentVideo();
+      if (video && globalThis.CXAutoNextVideoUtils.hasReachedEnd(video)) void handleEnded(video);
+    }, END_POLL_INTERVAL_MS);
+  }
+
   function initialize() {
     if (location.pathname !== "/e-training/quality/courselearn") {
       host?.remove();
@@ -338,10 +373,13 @@
       toggleButton = null;
       backgroundButton = null;
       backgroundHint = null;
+      if (endPollTimer) clearInterval(endPollTimer);
+      endPollTimer = null;
       return;
     }
     mountPanel();
     bindVideo();
+    startEndPoller();
   }
 
   const observer = new MutationObserver(() => {

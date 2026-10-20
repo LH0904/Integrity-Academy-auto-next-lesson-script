@@ -4,18 +4,66 @@
   const NEXT_SELECTOR = ".progress-count .right .next";
   const PREVIOUS_SELECTOR = ".progress-count .right .last";
   const VERIFY_TIMEOUT_MS = 20000;
+  const BACKGROUND_TIMEOUT_MS = 120000;
+  const CONTROL_EVENT = "cx-autonext-background-control-v1";
+  const STATE_EVENT = "cx-autonext-background-state-v1";
 
   let enabled = true;
+  let backgroundPlaybackEnabled = true;
+  let settingsReady = false;
+  let backgroundState = "waiting";
   let busy = false;
+  let runId = 0;
   let observedVideo = null;
+  const boundVideos = new WeakSet();
   let host = null;
   let statusNode = null;
   let toggleButton = null;
+  let backgroundButton = null;
+  let backgroundHint = null;
 
-  chrome.storage.local.get({ enabled: true }, (data) => {
-    enabled = data.enabled !== false;
-    renderState();
+  document.addEventListener(STATE_EVENT, (event) => {
+    if (event.detail === "ready") {
+      publishBackgroundSetting();
+      return;
+    }
+    if (!["enabled", "disabled", "waiting", "unsupported"].includes(event.detail)) return;
+    backgroundState = event.detail;
+    renderBackgroundState();
   });
+
+  chrome.storage.local.get({ enabled: true, backgroundPlaybackEnabled: true }, (data) => {
+    enabled = data.enabled !== false;
+    backgroundPlaybackEnabled = data.backgroundPlaybackEnabled !== false;
+    settingsReady = true;
+    renderState();
+    publishBackgroundSetting();
+  });
+
+  function publishBackgroundSetting() {
+    if (!settingsReady) return;
+    document.dispatchEvent(new CustomEvent(CONTROL_EVENT, {
+      detail: backgroundPlaybackEnabled ? "enable" : "disable",
+    }));
+  }
+
+  function renderBackgroundState() {
+    if (!backgroundButton || !backgroundHint) return;
+    backgroundButton.textContent = backgroundPlaybackEnabled ? "后台播放：开启" : "后台播放：关闭";
+    backgroundButton.setAttribute("aria-pressed", String(backgroundPlaybackEnabled));
+    const hints = {
+      enabled: "后台播放已启用；手动暂停仍有效",
+      waiting: "正在等待课程播放器",
+      unsupported: "当前页面暂不支持后台播放",
+      disabled: "后台播放已关闭",
+    };
+    const hint = hints[backgroundState] || hints.waiting;
+    if (backgroundHint.textContent !== hint) backgroundHint.textContent = hint;
+  }
+
+  function currentWaitBudget(foregroundMs) {
+    return document.hidden && backgroundPlaybackEnabled ? BACKGROUND_TIMEOUT_MS : foregroundMs;
+  }
 
   function currentVideo() {
     return document.querySelector(VIDEO_SELECTOR);
@@ -49,10 +97,18 @@
     if (!courseId) throw new Error("courseId 参数不存在");
 
     const url = `${location.origin}/e-training/api/course/quality/${encodeURIComponent(courseId)}`;
-    const response = await fetch(url, { credentials: "include", cache: "no-store" });
-    if (!response.ok) throw new Error(`课程接口返回 HTTP ${response.status}`);
-
-    const course = await response.json();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), currentWaitBudget(15000));
+    let course;
+    try {
+      const response = await fetch(url, {
+        credentials: "include", cache: "no-store", signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`课程接口返回 HTTP ${response.status}`);
+      course = await response.json();
+    } finally {
+      clearTimeout(timeout);
+    }
     const lesson = findLesson(course.courseTree?.sub, title);
     if (!lesson) throw new Error("课程接口中没有找到当前讲");
 
@@ -70,12 +126,13 @@
     };
   }
 
-  async function waitForLessonCompletion(title) {
-    const deadline = Date.now() + VERIFY_TIMEOUT_MS;
+  async function waitForLessonCompletion(title, assertActive) {
+    const startedAt = Date.now();
     let latest = null;
     let latestError = null;
 
-    while (Date.now() < deadline) {
+    while (true) {
+      assertActive();
       try {
         latest = await readLessonCompletion(title);
         latestError = null;
@@ -83,6 +140,8 @@
       } catch (error) {
         latestError = error;
       }
+      assertActive();
+      if (Date.now() - startedAt >= currentWaitBudget(VERIFY_TIMEOUT_MS)) break;
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
 
@@ -104,6 +163,7 @@
     if (!toggleButton) return;
     toggleButton.textContent = enabled ? "自动续播：开启" : "自动续播：暂停";
     toggleButton.setAttribute("aria-pressed", String(enabled));
+    renderBackgroundState();
     if (!busy) setStatus(enabled ? "等待本讲播放结束" : "已暂停自动续播");
   }
 
@@ -119,33 +179,46 @@
         .panel { width: 210px; padding: 12px; border: 1px solid #ddd; border-radius: 10px; background: #fff; color: #222; box-shadow: 0 3px 14px #0002; }
         button { width: 100%; border: 0; border-radius: 7px; padding: 9px 10px; background: #c91520; color: white; font-size: 13px; cursor: pointer; }
         button[aria-pressed="false"] { background: #666; }
+        .background { margin-top: 8px; background: #285a86; }
         .status { margin-top: 8px; font-size: 12px; line-height: 1.5; color: #555; }
         .hint { margin-top: 5px; font-size: 11px; line-height: 1.4; color: #888; }
       </style>
       <div class="panel">
-        <button type="button" aria-pressed="true">自动续播：开启</button>
+        <button class="autonext" type="button" aria-pressed="true">自动续播：开启</button>
+        <button class="background" type="button" aria-pressed="true">后台播放：开启</button>
         <div class="status" role="status" aria-live="polite">正在初始化</div>
-        <div class="hint">保持课程页面在前台播放</div>
+        <div class="hint">正在等待课程播放器</div>
       </div>`;
     document.body.appendChild(host);
-    toggleButton = shadow.querySelector("button");
+    toggleButton = shadow.querySelector(".autonext");
+    backgroundButton = shadow.querySelector(".background");
+    backgroundHint = shadow.querySelector(".hint");
     statusNode = shadow.querySelector(".status");
     toggleButton.addEventListener("click", () => {
       enabled = !enabled;
+      runId += 1;
       chrome.storage.local.set({ enabled });
       renderState();
+      if (!enabled) setStatus("已暂停自动续播");
+    });
+    backgroundButton.addEventListener("click", () => {
+      backgroundPlaybackEnabled = !backgroundPlaybackEnabled;
+      chrome.storage.local.set({ backgroundPlaybackEnabled });
+      publishBackgroundSetting();
+      renderBackgroundState();
     });
     renderState();
   }
 
-  function waitFor(check, timeoutMs) {
-    return new Promise((resolve) => {
+  function waitFor(check, timeoutMs, assertActive = () => {}) {
+    return new Promise((resolve, reject) => {
       const startedAt = Date.now();
       const poll = () => {
+        try { assertActive(); } catch (error) { reject(error); return; }
         let value = false;
         try { value = check(); } catch (_) { /* The page may be replacing the player. */ }
         if (value) return resolve(value);
-        if (Date.now() - startedAt >= timeoutMs) return resolve(null);
+        if (Date.now() - startedAt >= currentWaitBudget(timeoutMs)) return resolve(null);
         setTimeout(poll, 250);
       };
       poll();
@@ -153,7 +226,7 @@
   }
 
   async function handleEnded(video) {
-    if (!enabled || busy || video !== currentVideo()) return;
+    if (!settingsReady || !enabled || busy || video !== currentVideo()) return;
 
     const nextButton = document.querySelector(NEXT_SELECTOR);
     if (!nextButton) {
@@ -166,6 +239,13 @@
     }
 
     busy = true;
+    const thisRun = ++runId;
+    const pageUrl = location.href;
+    const assertActive = () => {
+      if (!enabled || runId !== thisRun || location.href !== pageUrl) {
+        throw new DOMException("续播已取消", "AbortError");
+      }
+    };
     const oldTitle = currentTitle();
     const oldSource = video.currentSrc || video.src;
     const oldTime = video.currentTime;
@@ -176,8 +256,9 @@
       const switched = await waitFor(() => {
         const nextVideo = currentVideo();
         const nextSource = nextVideo?.currentSrc || nextVideo?.src || "";
-        return currentTitle() !== oldTitle || nextVideo !== video || (nextSource && nextSource !== oldSource);
-      }, 20000);
+        return currentTitle() !== oldTitle || Boolean(nextVideo && nextVideo !== video) || (nextSource && nextSource !== oldSource);
+      }, 20000, assertActive);
+      assertActive();
 
       if (!switched) {
         setStatus("切换没有完成，请手动确认课程页面");
@@ -194,7 +275,8 @@
         const lessonRestarted = currentTitle() !== oldTitle && !nextVideo.ended && nextVideo.currentTime < oldTime;
         if (!sourceChanged && !playerChanged && !lessonRestarted) return null;
         return nextVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA ? nextVideo : null;
-      }, 20000);
+      }, 20000, assertActive);
+      assertActive();
 
       if (!loadedVideo) {
         setStatus("下一讲已切换，视频仍未就绪；可手动点击播放");
@@ -202,27 +284,26 @@
       }
 
       setStatus("正在核对平台保存的播放进度和累计时长…");
-      const verification = await waitForLessonCompletion(oldTitle);
+      const verification = await waitForLessonCompletion(oldTitle, assertActive);
+      assertActive();
       if (!verification.result?.completed) {
         const returned = await returnToLesson(oldTitle);
+        assertActive();
         if (!verification.result) {
           setStatus(returned
             ? "暂时无法读取平台学习记录，已返回本讲并停止续播"
             : "暂时无法读取平台学习记录，自动续播已停止");
         } else {
-          const { learned, playPercent, durationPercent } = verification.result;
+          const { playPercent, durationPercent } = verification.result;
           setStatus(returned
             ? `平台尚未确认本讲完成（进度 ${playPercent}%，时长 ${Math.floor(durationPercent)}%）；已返回本讲并停止续播`
             : `平台尚未确认本讲完成（进度 ${playPercent}%，时长 ${Math.floor(durationPercent)}%）；自动续播已停止`);
-          if (learned && playPercent > 90 && durationPercent >= 90) {
-            setStatus(returned
-              ? "平台仍未标记本讲完成；已返回本讲并停止续播"
-              : "平台仍未标记本讲完成；自动续播已停止");
-          }
         }
         return;
       }
 
+      assertActive();
+      if (loadedVideo !== currentVideo()) return;
       if (loadedVideo.paused || loadedVideo.ended) {
         try {
           await loadedVideo.play();
@@ -233,13 +314,10 @@
       } else {
         setStatus("下一讲已开始播放");
       }
+    } catch (error) {
+      if (error.name !== "AbortError") setStatus("续播遇到异常，请检查课程页面");
     } finally {
-      setTimeout(() => {
-        busy = false;
-        if (enabled && statusNode?.textContent === "下一讲已开始播放") {
-          setStatus("等待本讲播放结束");
-        }
-      }, 1200);
+      busy = false;
     }
   }
 
@@ -247,6 +325,8 @@
     const video = currentVideo();
     if (!video || video === observedVideo) return;
     observedVideo = video;
+    if (boundVideos.has(video)) return;
+    boundVideos.add(video);
     video.addEventListener("ended", () => handleEnded(video));
   }
 
@@ -256,6 +336,8 @@
       host = null;
       statusNode = null;
       toggleButton = null;
+      backgroundButton = null;
+      backgroundHint = null;
       return;
     }
     mountPanel();
@@ -266,6 +348,11 @@
     initialize();
     bindVideo();
   });
+  // A user's navigation takes priority over a pending automatic transition.
+  document.addEventListener("click", (event) => {
+    if (event.isTrusted && event.target instanceof Element &&
+        event.target.closest("#leftBox, .progress-count .right")) runId += 1;
+  }, true);
   observer.observe(document.documentElement, { childList: true, subtree: true });
   initialize();
 })();

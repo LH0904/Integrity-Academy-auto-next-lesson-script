@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "诚信学堂自动续播",
+  "version": "1.0.0",
+  "description": "本讲视频结束后自动切换到诚信学堂的下一讲并尝试播放。",
+  "permissions": ["storage"],
+  "host_permissions": ["https://cx.wanfangdata.com.cn/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://cx.wanfangdata.com.cn/e-training/quality/courselearn*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

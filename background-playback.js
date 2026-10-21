@@ -24,8 +24,9 @@
   }
 
   function reconcile(force = false) {
+    // quality（专业课）和 lecture（公需课/讲座）共用这个页面组件。
     if (!enabled || suspended ||
-        location.pathname !== "/e-training/quality/courselearn") {
+        !/^\/e-training\/[^/]+\/courselearn\/?$/.test(location.pathname)) {
       restore();
       report("disabled", force);
       return;

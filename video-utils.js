@@ -1,4 +1,18 @@
+const COURSE_LEARN_PATH = /^\/e-training\/([^/]+)\/courselearn\/?$/;
+
 globalThis.CXAutoNextVideoUtils = Object.freeze({
+  // 平台把课程学习页拆成了几套路由：/e-training/quality/courselearn（专业课）、
+  // /e-training/lecture/courselearn（公需课/讲座）。它们加载同一个页面组件、
+  // 调用同一个课程接口，所以只按路径形状识别，不再写死 quality。
+  courseLearnKind(pathname) {
+    const match = COURSE_LEARN_PATH.exec(pathname || "");
+    return match ? match[1] : "";
+  },
+
+  isCourseLearnPage(pathname) {
+    return COURSE_LEARN_PATH.test(pathname || "");
+  },
+
   hasReachedEnd(video) {
     if (!video) return false;
     if (video.ended) return true;

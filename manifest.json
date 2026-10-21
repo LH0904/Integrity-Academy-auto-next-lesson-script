@@ -1,20 +1,20 @@
 {
   "manifest_version": 3,
   "name": "诚信学堂自动续播",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "minimum_chrome_version": "111",
   "description": "支持后台播放，核对本讲学习记录后自动续播下一讲。",
   "permissions": ["storage"],
   "host_permissions": ["https://cx.wanfangdata.com.cn/*"],
   "content_scripts": [
     {
-      "matches": ["https://cx.wanfangdata.com.cn/e-training/quality/courselearn*"],
+      "matches": ["https://cx.wanfangdata.com.cn/e-training/*/courselearn*"],
       "js": ["background-playback.js"],
       "world": "MAIN",
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://cx.wanfangdata.com.cn/e-training/quality/courselearn*"],
+      "matches": ["https://cx.wanfangdata.com.cn/e-training/*/courselearn*"],
       "js": ["video-utils.js", "content.js"],
       "run_at": "document_idle"
     }

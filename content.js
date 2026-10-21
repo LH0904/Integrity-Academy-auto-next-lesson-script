@@ -127,6 +127,7 @@
     const courseId = new URLSearchParams(location.search).get("courseId");
     if (!courseId) throw new Error("courseId 参数不存在");
 
+    // 公需课（lecture）页面同样用这个接口读取课程树，路由不同但数据源一致。
     const url = `${location.origin}/e-training/api/course/quality/${encodeURIComponent(courseId)}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), currentWaitBudget(15000));
@@ -366,7 +367,7 @@
   }
 
   function initialize() {
-    if (location.pathname !== "/e-training/quality/courselearn") {
+    if (!globalThis.CXAutoNextVideoUtils.isCourseLearnPage(location.pathname)) {
       host?.remove();
       host = null;
       statusNode = null;

@@ -31,10 +31,10 @@
   }
   const CONTROL = "cx-autonext-background-control-v1";
   const STATE = "cx-autonext-background-state-v1";
-  function fixture(initiallyMounted = true) {
+  function fixture(initiallyMounted = true, pathname = "/e-training/quality/courselearn") {
     const document = new Target();
     const window = new Target();
-    const location = { pathname: "/e-training/quality/courselearn" };
+    const location = { pathname };
     const callbacks = [];
     const states = [];
     document.documentElement = {};
@@ -75,11 +75,26 @@
     };
   }
 
-  assert(manifest.version === "1.3.0", "Version must match the packaged release");
+  assert(manifest.version === "1.4.0", "Version must match the packaged release");
   assert(manifest.content_scripts.some((entry) =>
     entry.world === "MAIN" && entry.js.includes("background-playback.js")), "Missing MAIN-world bridge");
   assert(manifest.content_scripts.some((entry) =>
     entry.world !== "MAIN" && entry.js.includes("content.js")), "Settings must remain isolated");
+  assert(manifest.content_scripts.every((entry) =>
+    entry.matches.some((pattern) => pattern.includes("/e-training/*/courselearn"))),
+    "Content scripts must cover every /e-training/<kind>/courselearn route");
+
+  const utilsGlobal = {};
+  new Function("globalThis", read("video-utils.js"))(utilsGlobal);
+  const utils = utilsGlobal.CXAutoNextVideoUtils;
+  assert(utils.isCourseLearnPage("/e-training/quality/courselearn"), "Quality course page must be recognised");
+  assert(utils.isCourseLearnPage("/e-training/lecture/courselearn"), "Lecture course page must be recognised");
+  assert(utils.isCourseLearnPage("/e-training/lecture/courselearn/"), "A trailing slash must still match");
+  assert(!utils.isCourseLearnPage("/e-training/lecture/introduction"), "Introduction is not a learning page");
+  assert(!utils.isCourseLearnPage("/e-training/lecture/courselearn/extra"), "Nested paths must not match");
+  assert(utils.courseLearnKind("/e-training/lecture/courselearn") === "lecture", "Kind must come from the route");
+  assert(utils.courseLearnKind("/e-training/quality/courselearn") === "quality", "Kind must come from the route");
+  assert(utils.courseLearnKind("/e-training/") === "", "Unknown routes have no kind");
 
   const f = fixture();
   assert(f.states[0] === "ready", "Bridge must announce readiness");
@@ -132,5 +147,11 @@
   const count = late.states.length;
   late.command(true);
   assert(late.states.length === count + 1, "Repeated commands must acknowledge state for late clients");
-  output(`PASS: ${checks} checks; both scripts parse; manifest and background listener lifecycle verified.`);
+
+  const lecture = fixture(true, "/e-training/lecture/courselearn");
+  lecture.command(true);
+  lecture.hide();
+  assert(lecture.component.pauses === 0, "Lecture course pages must support background mode");
+
+  output(`PASS: ${checks} checks; both scripts parse; manifest, routes and background listener lifecycle verified.`);
 })();

@@ -3,6 +3,7 @@
   "use strict";
   const CONTROL_EVENT = "cx-autonext-background-control-v1";
   const STATE_EVENT = "cx-autonext-background-state-v1";
+  const COURSE_PATH = /^\/e-training\/(?:quality|welfare|lecture)\/courselearn$/;
   let enabled = false;
   let suspended = false;
   let attachment = null;
@@ -24,8 +25,7 @@
   }
 
   function reconcile(force = false) {
-    if (!enabled || suspended ||
-        location.pathname !== "/e-training/quality/courselearn") {
+    if (!enabled || suspended || !COURSE_PATH.test(location.pathname)) {
       restore();
       report("disabled", force);
       return;

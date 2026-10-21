@@ -8,6 +8,7 @@
   const END_POLL_INTERVAL_MS = 1000;
   const CONTROL_EVENT = "cx-autonext-background-control-v1";
   const STATE_EVENT = "cx-autonext-background-state-v1";
+  const COURSE_PATH = /^\/e-training\/(quality|welfare|lecture)\/courselearn$/;
 
   let enabled = true;
   let backgroundPlaybackEnabled = true;
@@ -79,6 +80,13 @@
     return title.replace(/^\s*\d+(?:\.\d+)*\s*/, "").trim();
   }
 
+  function currentCourseType() {
+    const match = location.pathname.match(COURSE_PATH);
+    if (!match) return null;
+    // Welfare courses use the same course data API as quality courses.
+    return match[1] === "lecture" ? "lecture" : "quality";
+  }
+
   function durationInSeconds(value) {
     return globalThis.CXAutoNextVideoUtils.durationInSeconds(value);
   }
@@ -124,10 +132,12 @@
   }
 
   async function readLessonCompletion(title) {
+    const courseType = currentCourseType();
+    if (!courseType) throw new Error("当前页面不是支持的课程播放页");
     const courseId = new URLSearchParams(location.search).get("courseId");
     if (!courseId) throw new Error("courseId 参数不存在");
 
-    const url = `${location.origin}/e-training/api/course/quality/${encodeURIComponent(courseId)}`;
+    const url = `${location.origin}/e-training/api/course/${courseType}/${encodeURIComponent(courseId)}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), currentWaitBudget(15000));
     let course;
@@ -366,7 +376,7 @@
   }
 
   function initialize() {
-    if (location.pathname !== "/e-training/quality/courselearn") {
+    if (!currentCourseType()) {
       host?.remove();
       host = null;
       statusNode = null;
